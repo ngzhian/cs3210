@@ -1,0 +1,133 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+#include <mpi.h>
+#include <time.h>
+#include <malloc.h>
+
+#define N 2
+
+void populate(double [][N], int, int);
+int rank_above_me(int, int);
+int rank_below_me(int, int);
+
+int main(int argc, char* argv[]) {
+  double start, end, elapsed;
+  int my_rank;
+  int p;
+
+
+  MPI_Status status;
+  MPI_Init(&argc, &argv);
+  MPI_Comm_rank(MPI_COMM_WORLD, &my_rank);
+  MPI_Comm_size(MPI_COMM_WORLD, &p);
+
+  if (my_rank == 0) srand(time(NULL));
+
+  int num_per_proc = N/p;
+
+  double my_rows[num_per_proc][N];
+  double my_cols[num_per_proc][N];
+  double my_result[num_per_proc][N];
+
+  populate(my_rows, num_per_proc, N);
+  populate(my_cols, num_per_proc, N);
+
+  int z;
+
+  start = MPI_Wtime();
+
+  int r, c, i;
+  //compute
+  int round;
+  for (round = 0; round < p; round++) {
+    double result = 0;
+    // compute locally
+    for (r = 0; r < num_per_proc; r++) {
+      for (c = 0; c < num_per_proc; c++) {
+        for (i = 0; i < N; i++) {
+          result += my_rows[r][i] * my_cols[c][i];
+        }
+      my_result[c][round*num_per_proc + r] = result;
+      }
+    }
+
+    if (round+1 == p) break;
+
+    printf("%d\n", my_rank);
+    printf("first float: %f\n", my_rows[0][0]);
+    if (my_rank % 2 == 0) {
+      int send_to = rank_above_me(p, my_rank);
+      MPI_Send(my_rows, num_per_proc*N, MPI_DOUBLE, send_to, my_rank, MPI_COMM_WORLD);
+      int receive_from = rank_below_me(p, my_rank);
+      MPI_Recv(my_rows, num_per_proc*N, MPI_DOUBLE, receive_from, receive_from, MPI_COMM_WORLD, &status);
+    } else {
+      int receive_from = rank_below_me(p, my_rank);
+      MPI_Status status;
+      MPI_Recv(my_rows, N*num_per_proc, MPI_DOUBLE, receive_from, receive_from, MPI_COMM_WORLD, &status);
+      int send_to = rank_above_me(p, my_rank);
+      MPI_Send(my_rows, N*num_per_proc, MPI_DOUBLE, send_to, my_rank, MPI_COMM_WORLD);
+    }
+  }
+
+  if (my_rank == 0) {
+    printf("my_result: \n");
+    int y;
+    for (y = 0; y < num_per_proc; y++) {
+      for (z = 0; z < N; z++) {
+        printf("%f, ", my_result[y][z]);
+      }
+      printf("\n");
+    }
+  }
+
+
+  double result_cols[N][N];
+  // gather results
+  MPI_Gather(my_result,N*num_per_proc, MPI_DOUBLE, result_cols, N*num_per_proc, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+  if (my_rank == 0) {
+    printf("my_result: \n");
+    int y;
+    for (y = 0; y < N; y++) {
+      for (z = 0; z < N; z++) {
+        printf("%f, ", my_result[y][z]);
+      }
+      printf("\n");
+    }
+    printf("\n");
+  }
+
+  end = MPI_Wtime();
+  elapsed = end - start;
+  //printf("%d : Took %f\n", my_rank, elapsed);
+
+  MPI_Finalize();
+}
+
+void populate(double matrix[][N], int num, int count) {
+  double r;
+  int i, j;
+  for (i = 0; i < num; i++) {
+    for (j = 0; j < count; j++) {
+      r = (double)rand()/(double)RAND_MAX;
+      matrix[i][j] = r;
+    }
+  }
+}
+
+int rank_above_me(int p, int my_rank) {
+  if (my_rank == 0) {
+    return p-1;
+  } else {
+    return my_rank - 1;
+  }
+}
+
+int rank_below_me(int p, int my_rank) {
+  if (my_rank == p-1) {
+    return 0;
+  } else {
+    return my_rank + 1;
+  }
+}
