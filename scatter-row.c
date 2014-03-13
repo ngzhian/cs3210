@@ -13,19 +13,15 @@ int rank_below_me(int, int);
 
 int main(int argc, char* argv[]) {
   double start, end, elapsed;
-  int my_rank;
-  int p;
-
+  int my_rank, p;
 
   MPI_Status status;
   MPI_Init(&argc, &argv);
   MPI_Comm_rank(MPI_COMM_WORLD, &my_rank);
   MPI_Comm_size(MPI_COMM_WORLD, &p);
-
-  srand(time(NULL));
+  srand(my_rank + time(NULL)); // to ensure each process gets a different seed
 
   int num_per_proc = N/p;
-
   double my_rows[num_per_proc][N];
   double my_cols[num_per_proc][N];
   double my_result[num_per_proc][N];
@@ -33,13 +29,9 @@ int main(int argc, char* argv[]) {
   populate(my_rows, num_per_proc, N);
   populate(my_cols, num_per_proc, N);
 
-  int z;
-
   start = MPI_Wtime();
 
-  int r, c, i;
-  //compute
-  int round;
+  int round, r, c, i;
   for (round = 0; round < p; round++) {
     double result = 0;
     // compute locally
@@ -65,6 +57,7 @@ int main(int argc, char* argv[]) {
       MPI_Recv(buffer, N*num_per_proc, MPI_DOUBLE, receive_from, receive_from, MPI_COMM_WORLD, &status);
       int send_to = rank_above_me(p, my_rank);
       MPI_Send(my_rows, N*num_per_proc, MPI_DOUBLE, send_to, my_rank, MPI_COMM_WORLD);
+      // copy numbers from buffer to row
       int i, j;
       for (i = 0; i < num_per_proc; i++) {
         for (j = 0; j < N; j++) {
@@ -78,21 +71,9 @@ int main(int argc, char* argv[]) {
   double results[N][N];
   MPI_Gather(my_result,N*num_per_proc, MPI_DOUBLE, results, N*num_per_proc, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
-  if (my_rank == 0) {
-    printf("my_result: \n");
-    int y;
-    for (y = 0; y < N; y++) {
-      for (z = 0; z < N; z++) {
-        printf("%f, ", results[y][z]);
-      }
-      printf("\n");
-    }
-    printf("\n");
-  }
-
   end = MPI_Wtime();
   elapsed = end - start;
-  //printf("%d : Took %f\n", my_rank, elapsed);
+  printf("%d took %f\n", my_rank, elapsed);
 
   MPI_Finalize();
 }
