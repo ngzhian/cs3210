@@ -33,10 +33,12 @@ int main(int argc, char* argv[]) {
     populate(matrixB);
     transpose(matrixB, matrixT);
   }
+
   start = MPI_Wtime();
 
   double row[num_per_proc][N];
   double col[num_per_proc][N];
+
   MPI_Scatter(matrixA, num_per_proc*N, MPI_DOUBLE, row, num_per_proc*N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
   MPI_Scatter(matrixT, num_per_proc*N, MPI_DOUBLE, col, num_per_proc*N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
@@ -87,9 +89,9 @@ int main(int argc, char* argv[]) {
 
   end = MPI_Wtime();
   elapsed = end - start;
-  if (my_rank == 0) {
-    printf("Took %f\n", elapsed);
-  }
+  //if (my_rank == 0) {
+    printf("%d : Took %f\n", my_rank, elapsed);
+  //}
 
   MPI_Finalize();
 }
