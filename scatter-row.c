@@ -5,7 +5,7 @@
 #include <time.h>
 #include <malloc.h>
 
-#define N 2
+#define N 4
 
 void populate(double [][N], int, int);
 int rank_above_me(int, int);
@@ -22,7 +22,7 @@ int main(int argc, char* argv[]) {
   MPI_Comm_rank(MPI_COMM_WORLD, &my_rank);
   MPI_Comm_size(MPI_COMM_WORLD, &p);
 
-  if (my_rank == 0) srand(time(NULL));
+  srand(time(NULL));
 
   int num_per_proc = N/p;
 
@@ -51,11 +51,8 @@ int main(int argc, char* argv[]) {
       my_result[c][round*num_per_proc + r] = result;
       }
     }
+    if (round+1 == p) break; // break early to avoid unnecessary communication
 
-    if (round+1 == p) break;
-
-    printf("%d\n", my_rank);
-    printf("first float: %f\n", my_rows[0][0]);
     if (my_rank % 2 == 0) {
       int send_to = rank_above_me(p, my_rank);
       MPI_Send(my_rows, num_per_proc*N, MPI_DOUBLE, send_to, my_rank, MPI_COMM_WORLD);
@@ -64,34 +61,29 @@ int main(int argc, char* argv[]) {
     } else {
       int receive_from = rank_below_me(p, my_rank);
       MPI_Status status;
-      MPI_Recv(my_rows, N*num_per_proc, MPI_DOUBLE, receive_from, receive_from, MPI_COMM_WORLD, &status);
+      double buffer[num_per_proc][N]; // need to store in buffer else it will overwrite what we send
+      MPI_Recv(buffer, N*num_per_proc, MPI_DOUBLE, receive_from, receive_from, MPI_COMM_WORLD, &status);
       int send_to = rank_above_me(p, my_rank);
       MPI_Send(my_rows, N*num_per_proc, MPI_DOUBLE, send_to, my_rank, MPI_COMM_WORLD);
-    }
-  }
-
-  if (my_rank == 0) {
-    printf("my_result: \n");
-    int y;
-    for (y = 0; y < num_per_proc; y++) {
-      for (z = 0; z < N; z++) {
-        printf("%f, ", my_result[y][z]);
+      int i, j;
+      for (i = 0; i < num_per_proc; i++) {
+        for (j = 0; j < N; j++) {
+          my_rows[i][j] = buffer[i][j];
+        }
       }
-      printf("\n");
     }
   }
 
-
-  double result_cols[N][N];
   // gather results
-  MPI_Gather(my_result,N*num_per_proc, MPI_DOUBLE, result_cols, N*num_per_proc, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+  double results[N][N];
+  MPI_Gather(my_result,N*num_per_proc, MPI_DOUBLE, results, N*num_per_proc, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
   if (my_rank == 0) {
     printf("my_result: \n");
     int y;
     for (y = 0; y < N; y++) {
       for (z = 0; z < N; z++) {
-        printf("%f, ", my_result[y][z]);
+        printf("%f, ", results[y][z]);
       }
       printf("\n");
     }
