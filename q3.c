@@ -52,7 +52,7 @@ int main(int argc, char* argv[]) {
   offsets[0] = offsetof(struct Vector, x);
   offsets[1] = offsetof(struct Vector, y);
   offsets[2] = offsetof(struct Vector, z);
-  MPI_Type_create_struct(nitems, blocklengths, offsets, types, &mpi_vector_type);
+  MPI_Type_struct(nitems, blocklengths, offsets, types, &mpi_vector_type);
   MPI_Type_commit(&mpi_vector_type);
 
   int num_particles = N/p;
