@@ -5,8 +5,6 @@
 #include <time.h>
 #include <malloc.h>
 
-//#define N 8
-
 struct Vector {
   double x;
   double y;
@@ -15,7 +13,6 @@ struct Vector {
 
 struct Particle {
   struct Vector position;
-  //double x, y, z;
   int charge;
 };
 
@@ -34,12 +31,9 @@ void array_copy(struct Particle *, struct Particle *, int);
 int main(int argc, char* argv[]) {
   int N = atoi(argv[1]);
   if (N == 0) return 0;
-  //printf("Placing %d particles.\n", N);
 
   double start, end, elapsed;
   int my_rank, p;
-
-  int charges[6] = {-3, -2, -1, 1, 2, 3};
 
   MPI_Status status;
   MPI_Init(&argc, &argv);
@@ -47,6 +41,7 @@ int main(int argc, char* argv[]) {
   MPI_Comm_size(MPI_COMM_WORLD, &p);
   srand(my_rank + time(NULL)); // to ensure each process gets a different seed
   
+  // define MPI derived datatype for struct Vector
   const int nitems = 3;
   int blocklengths[3] = {1,1,1};
   MPI_Datatype types[3] = { MPI_DOUBLE, MPI_DOUBLE, MPI_DOUBLE };
@@ -58,6 +53,7 @@ int main(int argc, char* argv[]) {
   MPI_Type_struct(nitems, blocklengths, offsets, types, &mpi_vector_type);
   MPI_Type_commit(&mpi_vector_type);
 
+  // define MPI derived datatype for struct Particle
   const int oitems = 2;
   int oblocklengths[2] = {1, 1};
   MPI_Datatype otypes[2] = {mpi_vector_type, MPI_INT};
@@ -68,25 +64,15 @@ int main(int argc, char* argv[]) {
   MPI_Type_struct(oitems, oblocklengths, ooffsets, otypes, &mpi_particle_type);
   MPI_Type_commit(&mpi_particle_type);
   
-  /*
-  const int oitems = 2;
-  int oblocklengths[2] = {3, 1};
-  MPI_Datatype otypes[2] = {MPI_DOUBLE, MPI_INT};
-  MPI_Datatype mpi_particle_type;
-  MPI_Aint ooffsets[2];
-  offsets[0] = offsetof(struct Particle, position);
-  offsets[1] = offsetof(struct Particle, charge);
-  MPI_Type_struct(oitems, oblocklengths, ooffsets, otypes, &mpi_particle_type);
-  MPI_Type_commit(&mpi_particle_type);
-  */
+  int num_particles = N/p; // number of particles in each processor
 
-  int num_particles = N/p;
-
-  // 10 x 10 x 10 box, generate x,y,z (0,10]
-  // each x,y,z generate Q {-3,-2,-1,1,2,3}
+  // particles that I am to calculate the total forces on
   struct Particle *my_particles = malloc(num_particles * sizeof(struct Particle));
+  // other particles that I will use to calculate the force
   struct Particle *other_particles = malloc(num_particles * sizeof(struct Particle));
 
+  // generate x,y,z in (0,10] num_particles times
+  // each x,y,z generate Q {-3,-2,-1,1,2,3}
   int i;
   for (i = 0; i < num_particles; i++) {
     struct Vector point = { gen_coordinate(),
@@ -99,6 +85,7 @@ int main(int argc, char* argv[]) {
     my_particles[i] = particle;
   }
 
+  // for the first round, we are pairing up the particles we current own
   array_copy(my_particles, other_particles, num_particles);
 
   /*
@@ -203,6 +190,11 @@ struct Vector scalar_multiply(struct Vector v, double k) {
 
 struct Vector calc_force_vector(struct Particle i, struct Particle j) {
   struct Vector difference;
+  // if the particles are in the same position, likely because
+  // they are the same particle, return 0, this is to prevent
+  // division by 0 errors
+  // Returning 0 is safe because the force vector returned is eventually
+  // summed up, so a 0 vector does not affect the result
   if (i.position.x == j.position.x &&
       i.position.y == j.position.y &&
       i.position.z == j.position.z) return difference;
