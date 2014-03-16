@@ -15,6 +15,7 @@ struct Vector {
 
 struct Particle {
   struct Vector position;
+  //double x, y, z;
   int charge;
 };
 
@@ -27,10 +28,12 @@ double calc_magnitude(struct Vector);
 struct Vector scalar_multiply(struct Vector, double);
 double gen_coordinate();
 int gen_charge();
-struct Vector calc_total_force(struct Particle *, int, int);
+struct Vector calc_total_force(struct Particle *, int, struct Particle);
+void array_copy(struct Particle *, struct Particle *, int);
+
 int main(int argc, char* argv[]) {
   int N = atoi(argv[1]);
-  if (N == 0) return;
+  if (N == 0) return 0;
   //printf("Placing %d particles.\n", N);
 
   double start, end, elapsed;
@@ -43,7 +46,7 @@ int main(int argc, char* argv[]) {
   MPI_Comm_rank(MPI_COMM_WORLD, &my_rank);
   MPI_Comm_size(MPI_COMM_WORLD, &p);
   srand(my_rank + time(NULL)); // to ensure each process gets a different seed
-
+  
   const int nitems = 3;
   int blocklengths[3] = {1,1,1};
   MPI_Datatype types[3] = { MPI_DOUBLE, MPI_DOUBLE, MPI_DOUBLE };
@@ -55,11 +58,35 @@ int main(int argc, char* argv[]) {
   MPI_Type_struct(nitems, blocklengths, offsets, types, &mpi_vector_type);
   MPI_Type_commit(&mpi_vector_type);
 
+  const int oitems = 2;
+  int oblocklengths[2] = {1, 1};
+  MPI_Datatype otypes[2] = {mpi_vector_type, MPI_INT};
+  MPI_Datatype mpi_particle_type;
+  MPI_Aint ooffsets[2] = { 0, 24 };
+  offsets[0] = offsetof(struct Particle, position);
+  offsets[1] = offsetof(struct Particle, charge);
+  MPI_Type_struct(oitems, oblocklengths, ooffsets, otypes, &mpi_particle_type);
+  MPI_Type_commit(&mpi_particle_type);
+  
+  /*
+  const int oitems = 2;
+  int oblocklengths[2] = {3, 1};
+  MPI_Datatype otypes[2] = {MPI_DOUBLE, MPI_INT};
+  MPI_Datatype mpi_particle_type;
+  MPI_Aint ooffsets[2];
+  offsets[0] = offsetof(struct Particle, position);
+  offsets[1] = offsetof(struct Particle, charge);
+  MPI_Type_struct(oitems, oblocklengths, ooffsets, otypes, &mpi_particle_type);
+  MPI_Type_commit(&mpi_particle_type);
+  */
+
   int num_particles = N/p;
 
   // 10 x 10 x 10 box, generate x,y,z (0,10]
   // each x,y,z generate Q {-3,-2,-1,1,2,3}
-  struct Particle *particles = malloc(num_particles * sizeof(struct Particle));
+  struct Particle *my_particles = malloc(num_particles * sizeof(struct Particle));
+  struct Particle *other_particles = malloc(num_particles * sizeof(struct Particle));
+
   int i;
   for (i = 0; i < num_particles; i++) {
     struct Vector point = { gen_coordinate(),
@@ -69,8 +96,10 @@ int main(int argc, char* argv[]) {
       point,
       gen_charge()
     };
-    particles[i] = particle;
+    my_particles[i] = particle;
   }
+
+  array_copy(my_particles, other_particles, num_particles);
 
   /*
   // print the particles this process has
@@ -84,10 +113,40 @@ int main(int argc, char* argv[]) {
 
   start = MPI_Wtime();
 
+  // for all the N on all processors, sum to the total;
+
+  // array of forces on the particle that I am taking care of
+  // this is slowly summed up as I retrieve more elements
   struct Vector *forces = malloc(num_particles * sizeof(struct Vector));
-  for (i = 0; i < num_particles; i++) {
-    struct Vector total = calc_total_force(particles, num_particles, i);
-    forces[i] = total;
+  int round;
+  for (round = 0; round < p; round++) {
+    int i;
+    for (i = 0; i < num_particles; i++) {
+      struct Vector total = calc_total_force(other_particles, num_particles, my_particles[i]);
+      forces[i] = add_vectors(forces[i], total);
+    }
+    if (round == p-1) break;
+
+    // send and receive
+    if (my_rank % 2 == 0) {
+      int send_to = rank_above_me(p, my_rank);
+      MPI_Send(other_particles, num_particles, mpi_particle_type, send_to, my_rank, MPI_COMM_WORLD);
+      int receive_from = rank_below_me(p, my_rank);
+      MPI_Recv(other_particles, num_particles, mpi_particle_type, receive_from, receive_from, MPI_COMM_WORLD, &status);
+    } else {
+      int receive_from = rank_below_me(p, my_rank);
+      MPI_Status status;
+      struct Particle buffer[num_particles]; // need to store in buffer else it will overwrite what we send
+      MPI_Recv(buffer, num_particles, mpi_particle_type, receive_from, receive_from, MPI_COMM_WORLD, &status);
+      int x;
+      int send_to = rank_above_me(p, my_rank);
+      MPI_Send(other_particles, num_particles, mpi_particle_type, send_to, my_rank, MPI_COMM_WORLD);
+      // copy numbers from buffer to row
+      int i;
+      for (i = 0; i < num_particles; i++) {
+        other_particles[i] = buffer[i];
+      }
+    }
   }
 
   struct Vector results[N];
@@ -103,6 +162,7 @@ int main(int argc, char* argv[]) {
   */
   
   MPI_Type_free(&mpi_vector_type);
+  MPI_Type_free(&mpi_particle_type);
 
   end = MPI_Wtime();
 
@@ -142,22 +202,55 @@ struct Vector scalar_multiply(struct Vector v, double k) {
 }
 
 struct Vector calc_force_vector(struct Particle i, struct Particle j) {
-  struct Vector difference = subtract_vectors(i.position, j.position);
+  struct Vector difference;
+  if (i.position.x == j.position.x &&
+      i.position.y == j.position.y &&
+      i.position.z == j.position.z) return difference;
+  difference = subtract_vectors(i.position, j.position);
   double multiplier = (double)(i.charge * j.charge) /
     pow(calc_magnitude(difference), 3);
   return scalar_multiply(difference, multiplier);
 }
 
+/*
+ * Calculate the force that a group of particles exert
+ * one one particular particle.
+ */
 struct Vector calc_total_force(struct Particle *particles,
-    int num_particles,
-    int index) {
+    int num_particles, struct Particle particle) {
   struct Vector result = { 0.0, 0.0, 0.0 };
   int j;
   for (j = 0; j < num_particles; j++) {
-    if (j == index) continue;
-    struct Vector force = calc_force_vector(particles[index], particles[j]);
+    struct Vector force = calc_force_vector(particle, particles[j]);
     result = add_vectors(result, force);
   }
   return result;
+}
+
+int rank_above_me(int p, int my_rank) {
+  if (my_rank == 0) {
+    return p-1;
+  } else {
+    return my_rank - 1;
+  }
+}
+
+int rank_below_me(int p, int my_rank) {
+  if (my_rank == p-1) {
+    return 0;
+  } else {
+    return my_rank + 1;
+  }
+}
+
+void array_copy(struct Particle *from, struct Particle *to, int size) {
+  int i;
+  for (i = 0 ; i < size; i++) {
+    struct Vector v = { from[i].position.x,
+      from[i].position.y,
+      from[i].position.z };
+    struct Particle p = { v, from[i].charge };
+    to[i] = p;
+  }
 }
 
