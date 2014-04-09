@@ -1,145 +1,169 @@
-#include <stdio.h>
+#include <math.h>
 #include <mpi.h>
 #include <stdlib.h>
-#include <math.h>
+#include <stdio.h>
 #include <time.h>
 
-#define EPS 0.10
-
 double ras(double, double);
-double random_eps();
-void get_start_end_range(double *, double *);
+double gen_x1(double, double, double, double);
+double gen_x2(double, double);
+void get_range(int, int, double *, double *, double, double);
 double prob_accept(double new_state, double old_state);
-int is_valid_point(double next_1, double next_2, double start, double end);
-void pick_random_point_from_cur(double, double, double *, double *);
+void do_single_run(int, int, double *m_ras, double *m_x1, double *m_x2, double *low, double *upp, double);
 
 int main(int argc, char *argv[]) {
   int n = 2,
       my_rank,
       num_procs;
 
-  // time keeping variables
-  double start,
-         end,
-  // ranges that each processor takes care of
-         range_start,
-         range_end,
-  // the domain of Rastrigin function
-         lower_bound = -5.12,
-         upper_bound = 5.12;
+  double start, end,
+         range_start, range_end,
+         lower_bound = -5.12, upper_bound = 5.12;
 
   MPI_Init(&argc, &argv);
   MPI_Comm_rank(MPI_COMM_WORLD, &my_rank);
   MPI_Comm_size(MPI_COMM_WORLD, &num_procs);
   srand(time(NULL) + my_rank);
 
-  get_start_end_range(&range_start, &range_end);
+  double global_min_ras = 100.0,
+         global_min_x1, global_min_x2;
+  double run_min_ras = 100.0,
+         run_min_x1, run_min_x2;
 
+  int runs, root = 0;
+  double eps = 1.0;
+  for (runs = 0; runs < 1000000; runs++) {
+    // each processor finds its local minimum
+    do_single_run(my_rank, num_procs, &run_min_ras, &run_min_x1, &run_min_x2, &lower_bound, &upper_bound, eps);
+    // reduce and get the lowest minimum out of all processors
+    struct {
+      double val;
+      int rank;
+    } min_ras_and_rank = {run_min_ras, my_rank}, run_min;
+
+    // get the best value for a run
+    MPI_Allreduce(&min_ras_and_rank, &run_min, 1, MPI_DOUBLE_INT, MPI_MINLOC, MPI_COMM_WORLD);
+    
+    run_min_ras = run_min.val;
+
+    // run until run_min_ras has a precision of 1e-6
+    if (run_min.val <= 0.00001) {
+      break;
+    }
+
+    root = run_min.rank;
+    // now the new root broadcasts its x1
+    MPI_Bcast(&run_min_x1, 1, MPI_DOUBLE, root, MPI_COMM_WORLD);
+
+    // and the processors redefine lower and upper bounds
+    lower_bound = (run_min_x1 - eps < lower_bound) ? lower_bound : run_min_x1 - eps;
+    upper_bound = (run_min_x1 + eps > upper_bound) ? upper_bound : run_min_x1 + eps;
+  }
+
+  if (my_rank == 0) {
+    printf("%f\n", run_min_ras);
+  }
+
+  printf("runs: %d\n", runs);
+
+  MPI_Finalize();
+}
+
+/*
+ * Runs a single attempt to search for the minimum point.
+ * m_ras is where the min value is stored, m_x1 and m_x2 are the coordiates for that value
+ * low is the lower bound of x1, and upp the upper bound.
+ * eps is the max allowed deviation from the current point, used for finding next point
+ */
+void do_single_run(int my_rank, int num_procs, double *m_ras, double *m_x1, double *m_x2, double *low, double *upp, double eps) {
+  double x1_start,  // start x1 value for this processor
+         x1_end,    // max x1 value for this processor
+         x2_min = -5.12, x2_max = 5.12;
+
+  // partition the problem space to processors
+  get_range(my_rank, num_procs, &x1_start, &x1_end, *low, *upp);
+
+  //printf("%d: x1 start %f, x1 end %f\n", my_rank, x1_start, x1_end);
   int tries = 0;
-  double total_range = upper_bound - lower_bound;
-  double my_range = total_range / num_procs;
-  double cur_x1 = range_start,
-         cur_x2 = lower_bound,
+  double cur_x1 = x1_start,
+         cur_x2 = *low,
          cur_ras = ras(cur_x1, cur_x2),
          next_x1,
          next_x2,
          next_ras,
-         low_x1,
-         low_x2,
-         low_ras = 1000;
+         low_x1 = cur_x1,
+         low_x2 = cur_x2,
+         low_ras = cur_ras;
+  while (tries++ < 1000) {
+      if (fabs(low_ras < 0.00001)) break;
+      if (cur_ras < low_ras) {
+        low_ras = cur_ras;
+        low_x1 = cur_x1;
+        low_x2 = cur_x2;
+      }
 
-  double h = -10, i = -10;
+      next_x1 = gen_x1(x1_start, x1_end, cur_x1, eps);
+      next_x2 = gen_x2(cur_x2, eps);
 
-  while (tries < (total_range/EPS * 9 )) {
-  //while (tries < 1000) {
-    if (cur_ras < low_ras) {
-      low_ras = cur_ras;
-      low_x1 = cur_x1;
-      low_x2 = cur_x2;
-    }
-
-    do {
-      pick_random_point_from_cur(cur_x1, cur_x2, &next_x1, &next_x2);
-    } while (!is_valid_point(next_x1, next_x2, range_start, range_end));
-    if (next_x1 > h) {
-      h = next_x1;
-    }
-    if (next_x2 > i) {
-      i = next_x2;
-    }
-
-    double next_ras = ras(next_x1, next_x2);
-    double prob = prob_accept(next_ras, cur_ras);
-    //printf("probability is %f, (%.3f, %.3f) -> (%.3f, %.3f)\n",
-        //prob, cur_x1, cur_x2, next_x1, next_x2);
-    double ran = (double) rand() / (double) RAND_MAX;
-    if (ran > prob) {
-    } else {
-      cur_x1 = next_x1;
-      cur_x2 = next_x2;
-      cur_ras = next_ras;
-    }
-    tries++;
+      double next_ras = ras(next_x1, next_x2);
+      double prob = prob_accept(next_ras, cur_ras);
+      double ran = (double) rand() / (double) RAND_MAX;
+      if (ran > prob) {
+      } else {
+        cur_x1 = next_x1;
+        cur_x2 = next_x2;
+        cur_ras = next_ras;
+      }
+      tries++;
   }
-  printf("highest x1: %.3f, highest x2: %.3f\n", h, i);
-  //start = MPI_Wtime();
-
-  printf("lows: %f at (%f,%f)\n", low_ras, low_x1, low_x2);
-  MPI_Finalize();
+  *m_ras = low_ras;
+  *m_x1 = low_x1;
+  *m_x2 = low_x2;
 }
-
-void get_start_end_range(double *start, double *end) {
-  int my_rank, num_procs;
-  double lower_bound = -5.12,
-    upper_bound = 5.12;
-  MPI_Comm_rank(MPI_COMM_WORLD, &my_rank);
-  MPI_Comm_size(MPI_COMM_WORLD, &num_procs);
-  double total_range = upper_bound - lower_bound;
-  double my_range = total_range / num_procs;
-  double range_start = my_rank * my_range - 5.12;
-  double range_end = my_rank * my_range + my_range - 5.12;
-  *start = range_start;
-  *end = range_end;
-  printf("start %f, end %f\n", range_start, range_end);
-}
-
 
 /*
- * Randomly pick a point that is eps distance away from
- * the curent point, in the x1 and/or x2 axis.
+ * Places in s and e the start and end x1 values for processor of rank
+ * l and u are the lower and upper bounds of x1 respectively
  */
-void pick_random_point_from_cur(double cur_x1,
-    double cur_x2,
-    double *next_x1,
-    double *next_x2) {
-  double eps_x1, eps_x2;
-    //eps_x1 = random_eps();
-    //eps_x2 = random_eps();
-    eps_x1 = 0.01;
-    eps_x2 = 0.01;
-    *next_x1 = cur_x1 + eps_x1;
-    *next_x2 = cur_x2 + eps_x2;
+void get_range(int rank, int num_procs, double *s, double *e, double l, double u) {
+  double total_range = u - l;
+  double my_range = total_range / num_procs;
+  // have an overlap area for the range_start, unless it is outside of domain
+  double range_start = l + (rank * my_range);
+  // have an overlap area for the range_end, unless it is outside of domain
+  double range_end = range_start + my_range;
+  *s = range_start;
+  *e = range_end;
 }
 
-double random_eps() {
-  int r = rand() % 3;
-  switch (r) {
-    case 0:
-      return -EPS;
-    case 1:
-      return 0.00;
-    case 2:
-      return EPS;
-  }
+/*
+ * Make a new_x1 such that
+ * cur_x1 - eps <= new_x1 <= cur_x1 + eps
+ * and
+ * s <= new_x1 <= e
+ */
+double gen_x1(double s, double e, double cur_x1, double eps) {
+  s = (cur_x1 - eps < s) ? s : cur_x1 - eps;
+  e = (cur_x1 + eps > e) ? e : cur_x1 + eps;
+  double r = (double) rand() / (double) RAND_MAX;
+  double range = e - s;
+  double random_double_in_range = r * range;
+  return s + random_double_in_range;
 }
 
-int is_valid_point(double next_1, double next_2, double start, double end) {
-  return next_1 >= start &&
-    next_1 <= end &&
-    next_2 >= -5.12 &&
-    next_2 <= 5.12;
+/*
+ * Make a new_x2 such that
+ * cur_x2 - eps <= new_x2 <= cur_x2 + eps
+ * and
+ * -5.12 <= new_x2 <= 5.12
+ */
+double gen_x2(double cur_x2, double eps) {
+  return gen_x1(-5.12, 5.12, cur_x2, eps);
 }
 
+/*
+ * Compute the value of the Rastigrin function at (x1, x2)
+ */
 double ras(double x1, double x2) {
   const n = 2;
   const double pi = 4. * atan(1.);
