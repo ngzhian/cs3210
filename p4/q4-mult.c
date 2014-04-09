@@ -9,7 +9,7 @@ double gen_x1(double, double, double, double);
 double gen_x2(double, double);
 void get_range(int, int, double *, double *, double, double);
 double prob_accept(double new_state, double old_state);
-void do_single_run(double *m_ras, double *m_x1, double *m_x2, double *low, double *upp, double);
+void do_single_run(int, int, double *m_ras, double *m_x1, double *m_x2, double *low, double *upp, double);
 
 int main(int argc, char *argv[]) {
   int n = 2,
@@ -32,29 +32,39 @@ int main(int argc, char *argv[]) {
 
   int runs, root = 0;
   double eps = 1.0;
-  for (runs = 0; runs < 100; runs++) {
+  for (runs = 0; runs < 1000000; runs++) {
     // each processor finds its local minimum
-    do_single_run(&run_min_ras, &run_min_x1, &run_min_x2, &lower_bound, &upper_bound, eps);
+    do_single_run(my_rank, num_procs, &run_min_ras, &run_min_x1, &run_min_x2, &lower_bound, &upper_bound, eps);
     // reduce and get the lowest minimum out of all processors
     struct {
       double val;
       int rank;
     } min_ras_and_rank = {run_min_ras, my_rank}, run_min;
+
     // get the best value for a run
-    MPI_Reduce(&min_ras_and_rank, &run_min, 1, MPI_DOUBLE_INT, MPI_MINLOC, 0, MPI_COMM_WORLD);
+    MPI_Allreduce(&min_ras_and_rank, &run_min, 1, MPI_DOUBLE_INT, MPI_MINLOC, MPI_COMM_WORLD);
     
+    run_min_ras = run_min.val;
+
+    // run until run_min_ras has a precision of 1e-6
+    if (run_min.val <= 0.00001) {
+      break;
+    }
+
     root = run_min.rank;
+    // now the new root broadcasts its x1
     MPI_Bcast(&run_min_x1, 1, MPI_DOUBLE, root, MPI_COMM_WORLD);
 
+    // and the processors redefine lower and upper bounds
     lower_bound = (run_min_x1 - eps < lower_bound) ? lower_bound : run_min_x1 - eps;
     upper_bound = (run_min_x1 + eps > upper_bound) ? upper_bound : run_min_x1 + eps;
-    eps /= 10;
   }
+
   if (my_rank == 0) {
     printf("%f\n", run_min_ras);
   }
 
-
+  printf("runs: %d\n", runs);
 
   MPI_Finalize();
 }
@@ -65,11 +75,7 @@ int main(int argc, char *argv[]) {
  * low is the lower bound of x1, and upp the upper bound.
  * eps is the max allowed deviation from the current point, used for finding next point
  */
-void do_single_run(double *m_ras, double *m_x1, double *m_x2, double *low, double *upp, double eps) {
-  int my_rank, num_procs;
-  MPI_Comm_rank(MPI_COMM_WORLD, &my_rank);
-  MPI_Comm_size(MPI_COMM_WORLD, &num_procs);
-
+void do_single_run(int my_rank, int num_procs, double *m_ras, double *m_x1, double *m_x2, double *low, double *upp, double eps) {
   double x1_start,  // start x1 value for this processor
          x1_end,    // max x1 value for this processor
          x2_min = -5.12, x2_max = 5.12;
