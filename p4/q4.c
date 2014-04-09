@@ -25,6 +25,7 @@ int main(int argc, char *argv[]) {
   MPI_Comm_size(MPI_COMM_WORLD, &num_procs);
   srand(time(NULL) + my_rank);
 
+  start = MPI_Wtime();
   double global_min_ras = 100.0,
          global_min_x1, global_min_x2;
   double run_min_ras = 100.0,
@@ -60,11 +61,11 @@ int main(int argc, char *argv[]) {
     upper_bound = (run_min_x1 + eps > upper_bound) ? upper_bound : run_min_x1 + eps;
   }
 
+  end = MPI_Wtime();
   if (my_rank == 0) {
     printf("%f\n", run_min_ras);
+    printf("%f\n", end - start);
   }
-
-  printf("runs: %d\n", runs);
 
   MPI_Finalize();
 }
